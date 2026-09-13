@@ -15,7 +15,6 @@ sys.path.insert(0, str(ROOT))
 from src.tail.hill import hill_estimator
 from src.tail.calibration import (
     build_features,
-    create_quality_labels,
     fit_reliability_model,
     predict_reliability,
 )
@@ -31,7 +30,7 @@ K_VALUES = np.arange(40, 1001, 40)
 
 WINDOW_SIZE = 15
 TOLERANCE = 0.10
-RANDOM_SEED = 42
+RANDOM_SEED = 123
 
 
 def simulate_pareto(alpha, n, rng):
@@ -39,67 +38,30 @@ def simulate_pareto(alpha, n, rng):
     return u ** (-1.0 / alpha)
 
 
-def simulate_student_t(df, n, rng):
-    return np.abs(
-        rng.standard_t(
-            df=df,
-            size=n,
-        )
-    )
+def simulate_student_t(alpha, n, rng):
+    return np.abs(rng.standard_t(df=alpha, size=n))
 
 
-def simulate_log_normal(n, rng):
-    return np.exp(
-        rng.normal(
-            0.0,
-            1.0,
-            size=n,
-        )
-    )
+def simulate_lognormal(n, rng):
+    return np.exp(rng.normal(0.0, 1.0, size=n))
 
 
-def simulate_truncated_pareto(
-    alpha,
-    n,
-    rng,
-    cutoff=100.0,
-):
-    output = []
+def simulate_truncated_pareto(alpha, n, rng, cutoff=100.0):
+    values = []
 
-    while len(output) < n:
-        batch = simulate_pareto(
-            alpha,
-            n,
-            rng,
-        )
+    while len(values) < n:
+        batch = simulate_pareto(alpha, n, rng)
+        batch = batch[batch <= cutoff]
+        values.extend(batch.tolist())
 
-        batch = batch[
-            batch <= cutoff
-        ]
-
-        output.extend(
-            batch.tolist()
-        )
-
-    return np.asarray(
-        output[:n],
-        dtype=float,
-    )
+    return np.asarray(values[:n], dtype=float)
 
 
 def simulate_mixture(alpha, n, rng):
-    n_tail = rng.binomial(
-        n,
-        0.80,
-    )
-
+    n_tail = rng.binomial(n, 0.80)
     n_body = n - n_tail
 
-    tail = simulate_pareto(
-        alpha,
-        n_tail,
-        rng,
-    )
+    tail = simulate_pareto(alpha, n_tail, rng)
 
     body = np.abs(
         rng.normal(
@@ -109,19 +71,10 @@ def simulate_mixture(alpha, n, rng):
         )
     )
 
-    return np.concatenate(
-        [
-            tail,
-            body,
-        ]
-    )
+    return np.concatenate([tail, body])
 
 
-def simulate_regime_switch(
-    alpha,
-    n,
-    rng,
-):
+def simulate_regime_switch(alpha, n, rng):
     split = rng.integers(
         int(0.30 * n),
         int(0.70 * n),
@@ -149,11 +102,16 @@ def simulate_regime_switch(
         rng,
     )
 
-    return np.concatenate(
-        [
-            first,
-            second,
-        ]
+    effective_alpha = min(
+        alpha_1,
+        alpha_2,
+    )
+
+    return (
+        np.concatenate(
+            [first, second]
+        ),
+        effective_alpha,
     )
 
 
@@ -168,27 +126,27 @@ def simulate_volatility_clustered(
         rng,
     )
 
-    sigma = np.empty(n)
-    sigma[0] = 1.0
+    volatility = np.empty(n)
+    volatility[0] = 1.0
 
     for t in range(1, n):
-        sigma[t] = (
-            0.94 * sigma[t - 1]
+        volatility[t] = (
+            0.94 * volatility[t - 1]
             + 0.06 * innovations[t - 1]
         )
 
-    mean_sigma = sigma.mean()
+    mean_volatility = volatility.mean()
 
-    if not np.isfinite(mean_sigma):
-        mean_sigma = 1.0
+    if not np.isfinite(mean_volatility):
+        mean_volatility = 1.0
 
-    if mean_sigma <= 0:
-        mean_sigma = 1.0
+    if mean_volatility <= 0:
+        mean_volatility = 1.0
 
     return (
         innovations
-        * sigma
-        / mean_sigma
+        * volatility
+        / mean_volatility
     )
 
 
@@ -199,51 +157,81 @@ def generate_sample(
     rng,
 ):
     if distribution == "Pareto":
-        return simulate_pareto(
+        return (
+            simulate_pareto(
+                alpha,
+                n,
+                rng,
+            ),
             alpha,
-            n,
-            rng,
+            True,
         )
 
     if distribution == "Student-t":
-        return simulate_student_t(
+        return (
+            simulate_student_t(
+                alpha,
+                n,
+                rng,
+            ),
             alpha,
-            n,
-            rng,
-        )
-
-    if distribution == "Lognormal":
-        return simulate_log_normal(
-            n,
-            rng,
-        )
-
-    if distribution == "Truncated-Pareto":
-        return simulate_truncated_pareto(
-            alpha,
-            n,
-            rng,
+            True,
         )
 
     if distribution == "Mixture":
-        return simulate_mixture(
+        return (
+            simulate_mixture(
+                alpha,
+                n,
+                rng,
+            ),
             alpha,
-            n,
-            rng,
-        )
-
-    if distribution == "Regime-Switch":
-        return simulate_regime_switch(
-            alpha,
-            n,
-            rng,
+            True,
         )
 
     if distribution == "Volatility-Clustered":
-        return simulate_volatility_clustered(
+        return (
+            simulate_volatility_clustered(
+                alpha,
+                n,
+                rng,
+            ),
+            alpha,
+            True,
+        )
+
+    if distribution == "Truncated-Pareto":
+        return (
+            simulate_truncated_pareto(
+                alpha,
+                n,
+                rng,
+            ),
+            np.nan,
+            False,
+        )
+
+    if distribution == "Lognormal":
+        return (
+            simulate_lognormal(
+                n,
+                rng,
+            ),
+            np.nan,
+            False,
+        )
+
+    if distribution == "Regime-Switch":
+        sample, effective_alpha = simulate_regime_switch(
             alpha,
             n,
             rng,
+        )
+
+        return (
+            sample,
+            effective_alpha,
+            True,
         )
 
     raise ValueError(
@@ -263,17 +251,7 @@ def hill_features(sample, rng):
     ]
 
     if len(sample) < 20:
-        return pd.DataFrame(
-            columns=[
-                "alpha_hat",
-                "bootstrap_std",
-                "bootstrap_cv",
-                "local_cv",
-                "local_slope",
-                "local_curvature",
-                "k_fraction",
-            ]
-        )
+        return pd.DataFrame()
 
     k_values = K_VALUES[
         K_VALUES < len(sample) - 1
@@ -372,6 +350,46 @@ def hill_features(sample, rng):
     )
 
 
+def create_labels(
+    features,
+    target_alpha,
+    tail_valid,
+):
+    if not tail_valid:
+        return np.zeros(
+            len(features),
+            dtype=int,
+        )
+
+    alpha_hat = features[
+        "alpha_hat"
+    ].to_numpy(
+        dtype=float
+    )
+
+    relative_error = (
+        np.abs(
+            alpha_hat
+            - target_alpha
+        )
+        / target_alpha
+    )
+
+    labels = (
+        np.isfinite(
+            relative_error
+        )
+        & (
+            relative_error
+            <= TOLERANCE
+        )
+    )
+
+    return labels.astype(
+        int
+    )
+
+
 def build_dataset(
     distributions,
     replications,
@@ -398,11 +416,13 @@ def build_dataset(
                     )
                 )
 
-                sample = generate_sample(
-                    distribution,
-                    alpha,
-                    n,
-                    rng,
+                sample, target_alpha, tail_valid = (
+                    generate_sample(
+                        distribution,
+                        alpha,
+                        n,
+                        rng,
+                    )
                 )
 
                 features = hill_features(
@@ -414,12 +434,10 @@ def build_dataset(
                     completed += 1
                     continue
 
-                labels = create_quality_labels(
-                    features[
-                        "alpha_hat"
-                    ].values,
-                    alpha,
-                    TOLERANCE,
+                labels = create_labels(
+                    features,
+                    target_alpha,
+                    tail_valid,
                 )
 
                 k_values = K_VALUES[
@@ -437,9 +455,21 @@ def build_dataset(
                 ):
                     row = {
                         "distribution": distribution,
-                        "true_alpha": float(alpha),
+                        "simulation_alpha": float(alpha),
+                        "target_alpha": (
+                            float(target_alpha)
+                            if np.isfinite(
+                                target_alpha
+                            )
+                            else np.nan
+                        ),
+                        "tail_valid": int(
+                            tail_valid
+                        ),
                         "sample_size": int(n),
-                        "replication": int(replication),
+                        "replication": int(
+                            replication
+                        ),
                         "k": int(
                             k_values[i]
                         ),
@@ -475,20 +505,6 @@ def build_dataset(
     )
 
 
-def calculate_metrics(
-    data,
-    feature_columns,
-):
-    predictions = predict_reliability(
-        model=None,
-        feature_frame=data[
-            feature_columns
-        ],
-    )
-
-    return predictions
-
-
 def main():
     rng = np.random.default_rng(
         RANDOM_SEED
@@ -497,16 +513,26 @@ def main():
     distributions = [
         "Pareto",
         "Student-t",
+        "Mixture",
+        "Volatility-Clustered",
+        "Regime-Switch",
         "Lognormal",
         "Truncated-Pareto",
-        "Mixture",
-        "Regime-Switch",
-        "Volatility-Clustered",
+    ]
+
+    feature_columns = [
+        "alpha_hat",
+        "bootstrap_std",
+        "bootstrap_cv",
+        "local_cv",
+        "local_slope",
+        "local_curvature",
+        "k_fraction",
     ]
 
     print("=" * 70)
     print(
-        "M0.10 - DATA-DRIVEN RELIABILITY CALIBRATION"
+        "M0.10b - VALIDITY-AWARE RELIABILITY CALIBRATION"
     )
     print("=" * 70)
 
@@ -521,28 +547,18 @@ def main():
         rng,
     )
 
-    print(
-        f"Training observations: {len(training)}",
-        flush=True,
-    )
-
-    feature_columns = [
-        "alpha_hat",
-        "bootstrap_std",
-        "bootstrap_cv",
-        "local_cv",
-        "local_slope",
-        "local_curvature",
-        "k_fraction",
-    ]
-
     training = training.replace(
         [np.inf, -np.inf],
         np.nan,
     )
 
     print(
-        "Training calibration model...",
+        f"Training observations: {len(training)}",
+        flush=True,
+    )
+
+    print(
+        "Training reliability model...",
         flush=True,
     )
 
@@ -557,7 +573,7 @@ def main():
         ROOT
         / "data"
         / "metadata"
-        / "tail_reliability_model.joblib"
+        / "tail_reliability_model_v2.joblib"
     )
 
     model_path.parent.mkdir(
@@ -591,16 +607,14 @@ def main():
         np.nan,
     )
 
-    predictions = predict_reliability(
+    testing[
+        "reliability_probability"
+    ] = predict_reliability(
         model,
         testing[
             feature_columns
         ],
-    )
-
-    testing[
-        "reliability_probability"
-    ] = predictions[
+    )[
         "reliability_probability"
     ]
 
@@ -610,16 +624,6 @@ def main():
             "target",
         ]
     ).copy()
-
-    if len(valid) == 0:
-        raise ValueError(
-            "No valid test observations remain."
-        )
-
-    if valid["target"].nunique() < 2:
-        raise ValueError(
-            "Test set contains only one target class."
-        )
 
     brier = brier_score_loss(
         valid["target"],
@@ -640,13 +644,17 @@ def main():
             "distribution"
         )
         .agg(
-            mean_reliability=(
+            predicted_reliability=(
                 "reliability_probability",
                 "mean",
             ),
-            actual_accuracy=(
+            observed_reliability=(
                 "target",
                 "mean",
+            ),
+            tail_valid=(
+                "tail_valid",
+                "first",
             ),
             n=(
                 "target",
@@ -656,8 +664,13 @@ def main():
         .reset_index()
     )
 
-    tables_dir = ROOT / "tables"
-    figures_dir = ROOT / "figures"
+    tables_dir = (
+        ROOT / "tables"
+    )
+
+    figures_dir = (
+        ROOT / "figures"
+    )
 
     tables_dir.mkdir(
         parents=True,
@@ -671,17 +684,12 @@ def main():
 
     test_path = (
         tables_dir
-        / "data_driven_reliability_test.csv"
+        / "data_driven_reliability_v2_test.csv"
     )
 
     summary_path = (
         tables_dir
-        / "data_driven_reliability_summary.csv"
-    )
-
-    calibration_path = (
-        tables_dir
-        / "reliability_calibration_curve.csv"
+        / "data_driven_reliability_v2_summary.csv"
     )
 
     testing.to_csv(
@@ -715,7 +723,7 @@ def main():
                 "reliability_probability",
                 "mean",
             ),
-            observed_accuracy=(
+            observed_reliability=(
                 "target",
                 "mean",
             ),
@@ -727,10 +735,15 @@ def main():
         .reset_index()
     )
 
+    calibration_path = (
+        tables_dir
+        / "reliability_calibration_curve_v2.csv"
+    )
+
     calibration_curve[
         [
             "predicted_reliability",
-            "observed_accuracy",
+            "observed_reliability",
             "observations",
         ]
     ].to_csv(
@@ -755,7 +768,7 @@ def main():
             "predicted_reliability"
         ],
         calibration_curve[
-            "observed_accuracy"
+            "observed_reliability"
         ],
         marker="o",
         linewidth=1.5,
@@ -767,11 +780,11 @@ def main():
     )
 
     plt.ylabel(
-        "Observed accuracy"
+        "Observed reliability"
     )
 
     plt.title(
-        "Distribution-Free Tail Reliability Calibration"
+        "Validity-Aware Tail Reliability Calibration"
     )
 
     plt.grid(
@@ -784,7 +797,7 @@ def main():
 
     figure_path = (
         figures_dir
-        / "distribution_free_reliability_calibration.png"
+        / "validity_aware_reliability_calibration.png"
     )
 
     plt.savefig(

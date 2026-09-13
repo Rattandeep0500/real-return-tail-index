@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -42,25 +43,32 @@ def build_features(
 
         center = np.mean(window)
 
-        if center != 0:
-            local_cv[i] = np.std(
-                window,
-                ddof=1,
-            ) / abs(center)
+        if np.isfinite(center) and center != 0:
+            local_cv[i] = (
+                np.std(window, ddof=1)
+                / abs(center)
+            )
 
-        x = np.arange(len(window), dtype=float)
+        if len(window) >= 3 and np.all(np.isfinite(window)):
+            x = np.arange(
+                len(window),
+                dtype=float,
+            )
 
-        if len(window) >= 3:
             coefficients = np.polyfit(
                 x,
                 window,
                 2,
             )
 
-            local_curvature[i] = 2.0 * coefficients[0]
+            local_curvature[i] = (
+                2.0 * coefficients[0]
+            )
 
             local_slope[i] = (
-                2.0 * coefficients[0] * (len(window) - 1)
+                2.0
+                * coefficients[0]
+                * (len(window) - 1)
                 + coefficients[1]
             )
 
@@ -71,10 +79,12 @@ def build_features(
             bootstrap_std,
             np.nan,
         ),
-        where=np.abs(alpha_values) > 0,
+        where=np.abs(alpha_values) > 1e-12,
     )
 
-    k_fraction = k_values / sample_size
+    k_fraction = (
+        k_values / float(sample_size)
+    )
 
     return pd.DataFrame(
         {
@@ -113,6 +123,12 @@ def build_calibration_model():
     base_model = Pipeline(
         [
             (
+                "imputer",
+                SimpleImputer(
+                    strategy="median",
+                ),
+            ),
+            (
                 "scaler",
                 StandardScaler(),
             ),
@@ -128,9 +144,9 @@ def build_calibration_model():
     )
 
     return CalibratedClassifierCV(
-        base_model,
+        estimator=base_model,
         method="sigmoid",
-        cv=5,
+        cv=3,
     )
 
 
@@ -138,22 +154,46 @@ def fit_reliability_model(
     feature_frame,
     labels,
 ):
-    valid = feature_frame[
-        np.isfinite(feature_frame).all(axis=1)
+    features = feature_frame[
+        FEATURE_NAMES
     ].copy()
 
-    valid_labels = np.asarray(
-        labels
-    )[valid.index]
+    labels = np.asarray(
+        labels,
+        dtype=int,
+    )
+
+    if len(features) != len(labels):
+        raise ValueError(
+            "Features and labels must have equal length."
+        )
+
+    features = features.replace(
+        [np.inf, -np.inf],
+        np.nan,
+    )
+
+    if len(features) == 0:
+        raise ValueError(
+            "No calibration observations available."
+        )
+
+    if len(np.unique(labels)) < 2:
+        raise ValueError(
+            "Calibration data contains only one target class."
+        )
 
     model = build_calibration_model()
 
     model.fit(
-        valid[FEATURE_NAMES],
-        valid_labels,
+        features,
+        labels,
     )
 
-    return model, valid.index
+    return model, np.ones(
+        len(features),
+        dtype=bool,
+    )
 
 
 def predict_reliability(
@@ -162,26 +202,17 @@ def predict_reliability(
 ):
     result = feature_frame.copy()
 
-    clean = result[
+    features = result[
         FEATURE_NAMES
     ].replace(
         [np.inf, -np.inf],
         np.nan,
     )
 
-    valid = clean.notna().all(axis=1)
-
-    result["reliability_probability"] = np.nan
-
-    if valid.any():
-        result.loc[
-            valid,
-            "reliability_probability",
-        ] = model.predict_proba(
-            clean.loc[
-                valid,
-                FEATURE_NAMES,
-            ]
+    result["reliability_probability"] = (
+        model.predict_proba(
+            features
         )[:, 1]
+    )
 
     return result
