@@ -13,5 +13,8 @@ data/processed/*
 figures/*
 tables/*
 
+docs/assets/*
+!docs/assets/research-overview.png
+
 .env
 .DS_Store
