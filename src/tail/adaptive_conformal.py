@@ -34,9 +34,59 @@ def relative_nonconformity(
     )
 
 
-def make_quantile_bins(
+def make_quantile_edges(
     values,
     n_bins,
+):
+    values = np.asarray(
+        values,
+        dtype=float,
+    )
+
+    valid = np.isfinite(
+        values
+    )
+
+    if valid.sum() == 0:
+        return np.array(
+            [-np.inf, np.inf],
+            dtype=float,
+        )
+
+    if valid.sum() < n_bins:
+        return np.array(
+            [-np.inf, np.inf],
+            dtype=float,
+        )
+
+    edges = np.quantile(
+        values[valid],
+        np.linspace(
+            0.0,
+            1.0,
+            n_bins + 1,
+        ),
+    )
+
+    edges = np.unique(
+        edges
+    )
+
+    if len(edges) < 2:
+        return np.array(
+            [-np.inf, np.inf],
+            dtype=float,
+        )
+
+    edges[0] = -np.inf
+    edges[-1] = np.inf
+
+    return edges
+
+
+def apply_quantile_bins(
+    values,
+    edges,
 ):
     values = np.asarray(
         values,
@@ -53,40 +103,24 @@ def make_quantile_bins(
         values
     )
 
-    if valid.sum() < n_bins:
-        groups[valid] = 0
-        return groups
-
-    edges = np.quantile(
-        values[valid],
-        np.linspace(
-            0.0,
-            1.0,
-            n_bins + 1,
-        ),
-    )
-
-    edges = np.unique(
-        edges
-    )
-
     if len(edges) < 2:
         groups[valid] = 0
         return groups
 
-    groups[valid] = np.searchsorted(
-        edges[1:-1],
-        values[valid],
-        side="right",
+    groups[valid] = (
+        np.searchsorted(
+            edges[1:-1],
+            values[valid],
+            side="right",
+        )
     )
 
     return groups
 
 
-def make_k_bins(
+def make_k_fraction(
     k,
     sample_size,
-    n_bins=4,
 ):
     k = np.asarray(
         k,
@@ -98,7 +132,7 @@ def make_k_bins(
         dtype=float,
     )
 
-    fraction = np.divide(
+    return np.divide(
         k,
         sample_size,
         out=np.full_like(
@@ -108,35 +142,34 @@ def make_k_bins(
         where=sample_size > 0,
     )
 
-    return make_quantile_bins(
-        fraction,
-        n_bins,
-    )
 
-
-def build_groups(
+def build_groups_from_edges(
     alpha_hat,
     bootstrap_cv,
     k,
     sample_size,
-    alpha_bins=4,
-    stability_bins=3,
-    k_bins=4,
+    alpha_edges,
+    stability_edges,
+    k_edges,
 ):
-    alpha_group = make_quantile_bins(
+    alpha_group = apply_quantile_bins(
         alpha_hat,
-        alpha_bins,
+        alpha_edges,
     )
 
-    stability_group = make_quantile_bins(
+    stability_group = apply_quantile_bins(
         bootstrap_cv,
-        stability_bins,
+        stability_edges,
     )
 
-    k_group = make_k_bins(
+    k_fraction = make_k_fraction(
         k,
         sample_size,
-        k_bins,
+    )
+
+    k_group = apply_quantile_bins(
+        k_fraction,
+        k_edges,
     )
 
     groups_3d = (
@@ -229,8 +262,7 @@ def fit_adaptive_conformal(
     missing = [
         column
         for column in required
-        if column
-        not in calibration_frame.columns
+        if column not in calibration_frame.columns
     ]
 
     if missing:
@@ -267,8 +299,44 @@ def fit_adaptive_conformal(
         ),
     )
 
+    alpha_edges = make_quantile_edges(
+        data[
+            alpha_hat_column
+        ].to_numpy(
+            dtype=float
+        ),
+        alpha_bins,
+    )
+
+    stability_edges = make_quantile_edges(
+        data[
+            bootstrap_cv_column
+        ].to_numpy(
+            dtype=float
+        ),
+        stability_bins,
+    )
+
+    k_fraction = make_k_fraction(
+        data[
+            k_column
+        ].to_numpy(
+            dtype=float
+        ),
+        data[
+            sample_size_column
+        ].to_numpy(
+            dtype=float
+        ),
+    )
+
+    k_edges = make_quantile_edges(
+        k_fraction,
+        k_bins,
+    )
+
     groups_3d, groups_2d = (
-        build_groups(
+        build_groups_from_edges(
             data[
                 alpha_hat_column
             ].to_numpy(
@@ -289,9 +357,9 @@ def fit_adaptive_conformal(
             ].to_numpy(
                 dtype=float
             ),
-            alpha_bins,
-            stability_bins,
-            k_bins,
+            alpha_edges,
+            stability_edges,
+            k_edges,
         )
     )
 
@@ -363,6 +431,9 @@ def fit_adaptive_conformal(
         "radii_2d": radii_2d,
         "group_sizes_3d": group_sizes_3d,
         "group_sizes_2d": group_sizes_2d,
+        "alpha_edges": alpha_edges,
+        "stability_edges": stability_edges,
+        "k_edges": k_edges,
         "alpha_bins": int(
             alpha_bins
         ),
@@ -418,14 +489,16 @@ def predict_adaptive_radius(
             "All prediction arrays must have identical shapes."
         )
 
-    groups_3d, groups_2d = build_groups(
-        alpha_hat,
-        bootstrap_cv,
-        k,
-        sample_size,
-        model["alpha_bins"],
-        model["stability_bins"],
-        model["k_bins"],
+    groups_3d, groups_2d = (
+        build_groups_from_edges(
+            alpha_hat,
+            bootstrap_cv,
+            k,
+            sample_size,
+            model["alpha_edges"],
+            model["stability_edges"],
+            model["k_edges"],
+        )
     )
 
     radii = np.full(
